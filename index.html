@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="kn">
+<head>
+  <meta charset="utf-8" />
+  <title>Ganesh Data Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.5/css/jquery.dataTables.min.css">
+  <link rel="stylesheet" href="https://cdn.datatables.net/responsive/2.5.0/css/responsive.dataTables.min.css">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 12px; }
+    h1 { text-align:center; font-size:1.25rem; margin-bottom:12px; }
+    .filters { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:center; margin-bottom:10px; }
+    .filters label { font-size:0.95rem; }
+    select, button { padding:6px 8px; font-size:0.95rem; }
+    #csvTable { width:100% !important; }
+    @media (max-width:600px) {
+      .filters { flex-direction:column; gap:6px; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Ganesh Data Viewer</h1>
+
+  <div class="filters">
+    <label>ಪೊಲೀಸ್ ಠಾಣೆ:
+      <select id="filterStation"><option value="">ಎಲ್ಲ</option></select>
+    </label>
+
+    <label>ಬೀಟ್ ಸಂಖ್ಯೆ:
+      <select id="filterBeat"><option value="">ಎಲ್ಲ</option></select>
+    </label>
+
+    <label>ವಿಸರ್ಜನೆಯ ದಿನಾಂಕ:
+      <select id="filterDate"><option value="">ಎಲ್ಲ</option></select>
+    </label>
+
+    <label>ವಿಧ:
+      <select id="filterType"><option value="">ಎಲ್ಲ</option></select>
+    </label>
+
+    <button id="btnReset">ಹಿಂದಕ್ಕೆ</button>
+  </div>
+
+  <table id="csvTable" class="display nowrap"></table>
+
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.5/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdn.datatables.net/responsive/2.5.0/js/dataTables.responsive.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+
+  <script>
+  const CSV_FILE = 'Ganesh.csv'; // file must be in same folder as index.html
+  const IGNORE = new Set(["", "undefined", "null", "N/A", "-", "NaN"]);
+
+  function clean(v) {
+    if (v === undefined || v === null) return "";
+    return String(v).trim();
+  }
+
+  function escapeRegExp(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  async function init() {
+    try {
+      const txt = await fetch(CSV_FILE).then(r => {
+        if (!r.ok) throw new Error('Cannot fetch ' + CSV_FILE + ' (check name and path)');
+        return r.text();
+      });
+
+      const parsed = Papa.parse(txt, { header: true, skipEmptyLines: true });
+      if (!parsed || !parsed.meta || !parsed.meta.fields) {
+        throw new Error('CSV parse failed or no headers found');
+      }
+
+      // Normalize headers (trim) and rebuild data objects using trimmed keys
+      const origFields = parsed.meta.fields; // original header names (may have spaces)
+      const fields = origFields.map(f => clean(f));
+      const rawData = parsed.data;
+      const data = rawData.map(row => {
+        const obj = {};
+        origFields.forEach((orig, i) => {
+          const key = fields[i];
+          obj[key] = clean(row[orig]);
+        });
+        return obj;
+      });
+
+      // Use DataTables columns based on trimmed field names
+      const columns = fields.map(h => ({ title: h, data: h }));
+
+      // initialize table
+      const table = $('#csvTable').DataTable({
+        data,
+        columns,
+        responsive: true,
+        pageLength: 10,
+        order: []
+      });
+
+      // helper: populate a select from column values
+      function populateSelect(selectEl, columnName, numericSort=false) {
+        // clear except "All"
+        selectEl.innerHTML = '<option value="">ಎಲ್ಲ</option>';
+        const set = new Set();
+        data.forEach(row => {
+          const v = clean(row[columnName]);
+          if (!IGNORE.has(v)) set.add(v);
+        });
+        const arr = Array.from(set);
+        if (numericSort) arr.sort((a,b)=> (Number(a)||0) - (Number(b)||0));
+        else arr.sort((a,b)=> a.localeCompare(b, undefined, {sensitivity:'base'}));
+        arr.forEach(v=>{
+          const opt = document.createElement('option');
+          opt.value = v;
+          opt.textContent = v;
+          selectEl.appendChild(opt);
+        });
+      }
+
+      // fill filters (except beat which is fixed 1..20)
+      const stationSelect = document.getElementById('filterStation');
+      const dateSelect = document.getElementById('filterDate');
+      const typeSelect = document.getElementById('filterType');
+      const beatSelect = document.getElementById('filterBeat');
+
+      // Column names must match those in your CSV (trimmed). We'll assume these exact names:
+      const COL_STATION = 'ಪೊಲೀಸ್ ಠಾಣೆ';
+      const COL_DATE    = 'ವಿಸರ್ಜನೆಯ ದಿನಾಂಕ';
+      const COL_TYPE    = 'ವಿಧ';
+      const COL_BEAT    = 'ಬೀಟ್ ಸಂಖ್ಯೆ';
+
+      // If any required column missing, try to show what headers are present (console)
+      const missing = [];
+      [COL_STATION, COL_DATE, COL_TYPE, COL_BEAT].forEach(c => { if (!fields.includes(c)) missing.push(c); });
+      if (missing.length) console.warn('Some expected columns not found in CSV headers:', missing, 'Found headers:', fields);
+
+      // populate selects (station, date, type) from data
+      if (fields.includes(COL_STATION)) populateSelect(stationSelect, COL_STATION);
+      if (fields.includes(COL_DATE)) populateSelect(dateSelect, COL_DATE);
+      if (fields.includes(COL_TYPE)) populateSelect(typeSelect, COL_TYPE);
+
+      // Beat fixed 1..20
+      beatSelect.innerHTML = '<option value="">ಎಲ್ಲ</option>';
+      for (let i = 1; i <= 20; i++) {
+        const opt = document.createElement('option');
+        opt.value = String(i);
+        opt.textContent = String(i);
+        beatSelect.appendChild(opt);
+      }
+
+      // apply filters function (combined)
+      function applyFilters() {
+        const valStation = stationSelect.value;
+        const valDate = dateSelect.value;
+        const valType = typeSelect.value;
+        const valBeat = beatSelect.value;
+
+        // use column indexes based on fields array
+        const idxStation = fields.indexOf(COL_STATION);
+        const idxDate    = fields.indexOf(COL_DATE);
+        const idxType    = fields.indexOf(COL_TYPE);
+        const idxBeat    = fields.indexOf(COL_BEAT);
+
+        // set column search for each column if present
+        if (idxStation >= 0) table.column(idxStation).search(valStation ? '^' + escapeRegExp(valStation) + '$' : '', true, false);
+        if (idxDate >= 0)    table.column(idxDate).search(valDate ? '^' + escapeRegExp(valDate) + '$' : '', true, false);
+        if (idxType >= 0)    table.column(idxType).search(valType ? '^' + escapeRegExp(valType) + '$' : '', true, false);
+        if (idxBeat >= 0)    table.column(idxBeat).search(valBeat ? '^' + escapeRegExp(valBeat) + '$' : '', true, false);
+
+        table.draw();
+      }
+
+      // events
+      stationSelect.addEventListener('change', applyFilters);
+      dateSelect.addEventListener('change', applyFilters);
+      typeSelect.addEventListener('change', applyFilters);
+      beatSelect.addEventListener('change', applyFilters);
+
+      // reset button
+      document.getElementById('btnReset').addEventListener('click', function() {
+        stationSelect.value = '';
+        beatSelect.value = '';
+        dateSelect.value = '';
+        typeSelect.value = '';
+        applyFilters();
+      });
+
+    } catch (err) {
+      console.error('Error initializing viewer:', err);
+      document.body.insertAdjacentHTML('beforeend', `<p style="color:red">Error: ${err.message}</p>`);
+    }
+  }
+
+  // start
+  init();
+  </script>
+</body>
+</html>
